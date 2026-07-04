@@ -122,6 +122,8 @@
                     isRunning: false
                 };
 
+                this.gpsWatchId = null;
+
                 this.bindEvents();
                 this.handleResize();
             }
@@ -220,31 +222,69 @@
             initGPS() {
                 if (!navigator.geolocation) {
                     this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'NO GPS');
+                    this.nodes.split.textContent = '0:00';
                     return;
                 }
 
-                navigator.geolocation.watchPosition(
-                    (pos) => {
-                        const speedMs = pos.coords.speed;
-                        
-                        if (speedMs !== null) {
-                            this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'ok', 'LOCKED');
-                        }
+                if (!window.isSecureContext && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+                    this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'HTTPS');
+                    this.nodes.split.textContent = '0:00';
+                    return;
+                }
 
-                        if (speedMs && speedMs > 0.5) {
-                            const secPer500 = 500 / speedMs;
-                            const m = Math.floor(secPer500 / 60);
-                            const s = Math.floor(secPer500 % 60).toString().padStart(2, '0');
-                            this.nodes.split.textContent = `${m}:${s}`;
-                        } else {
-                            this.nodes.split.textContent = "0:00";
-                        }
-                    },
-                    (err) => { 
-                        this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'DROPPED');
-                    },
-                    { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
-                );
+                this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'idle', 'SEARCHING');
+
+                if (this.gpsWatchId !== null) {
+                    navigator.geolocation.clearWatch(this.gpsWatchId);
+                }
+
+                const positionOptions = {
+                    enableHighAccuracy: true,
+                    timeout: 15000,
+                    maximumAge: 1000
+                };
+
+                const handlePosition = (pos) => {
+                    const hasCoordinates = Number.isFinite(pos.coords.latitude) && Number.isFinite(pos.coords.longitude);
+                    const speedMs = pos.coords.speed;
+
+                    if (hasCoordinates) {
+                        this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'ok', 'LOCKED');
+                    }
+
+                    if (speedMs !== null && Number.isFinite(speedMs) && speedMs > 0.5) {
+                        const secPer500 = 500 / speedMs;
+                        const m = Math.floor(secPer500 / 60);
+                        const s = Math.floor(secPer500 % 60).toString().padStart(2, '0');
+                        this.nodes.split.textContent = `${m}:${s}`;
+                    } else {
+                        this.nodes.split.textContent = '0:00';
+                    }
+                };
+
+                const handleError = (err) => {
+                    let statusText = 'SEARCHING';
+
+                    switch (err.code) {
+                        case 1:
+                            statusText = 'PERMISSION';
+                            break;
+                        case 2:
+                            statusText = 'NO FIX';
+                            break;
+                        case 3:
+                            statusText = 'TIMEOUT';
+                            break;
+                        default:
+                            statusText = 'DROPPED';
+                    }
+
+                    this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', statusText);
+                    this.nodes.split.textContent = '0:00';
+                };
+
+                navigator.geolocation.getCurrentPosition(handlePosition, handleError, positionOptions);
+                this.gpsWatchId = navigator.geolocation.watchPosition(handlePosition, handleError, positionOptions);
             }
 
             renderLoop() {
