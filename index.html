@@ -32,25 +32,25 @@
 <body class="bg-slate-100 text-slate-900 h-screen flex flex-col p-3 gap-3">
 
     <header class="flex justify-between items-center p-3 rounded-2xl bg-white/60 backdrop-blur-md border border-white shadow-sm shrink-0">
-        <div class="flex items-center gap-2">
+        <button type="button" id="telemetry-status" class="flex items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer focus:outline-none">
             <div id="status-accel-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]"></div>
             <div class="flex flex-col">
                 <span class="text-[9px] text-slate-400 uppercase tracking-widest font-bold">Surge Telemetry</span>
                 <span id="debugAccel" class="text-xs font-mono text-slate-700 font-bold tabular">STANDBY</span>
             </div>
-        </div>
+        </button>
 
         <div class="text-sm font-black tracking-widest text-slate-400 uppercase">
             Row<span class="text-emerald-500">Coach</span>
         </div>
 
-        <div class="flex items-center gap-2 text-right">
+        <button type="button" id="gps-status" class="flex items-center gap-2 text-right bg-transparent border-0 p-0 cursor-pointer focus:outline-none">
             <div class="flex flex-col">
                 <span class="text-[9px] text-slate-400 uppercase tracking-widest font-bold">GPS Satellites</span>
                 <span id="debugGPS" class="text-xs font-mono text-slate-700 font-bold tabular">SEARCHING</span>
             </div>
             <div id="status-gps-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]"></div>
-        </div>
+        </button>
     </header>
 
     <main class="flex-1 flex flex-col sm:flex-row gap-3">
@@ -106,7 +106,9 @@
                     dbgAccel: document.getElementById('debugAccel'),
                     dbgGPS: document.getElementById('debugGPS'),
                     dotAccel: document.getElementById('status-accel-dot'),
-                    dotGPS: document.getElementById('status-gps-dot')
+                    dotGPS: document.getElementById('status-gps-dot'),
+                    telemetryStatus: document.getElementById('telemetry-status'),
+                    gpsStatus: document.getElementById('gps-status')
                 };
 
                 this.ctx = this.nodes.canvas.getContext('2d');
@@ -132,6 +134,8 @@
             bindEvents() {
                 window.addEventListener('resize', () => this.handleResize());
                 this.nodes.btn.addEventListener('click', () => this.bootSequence());
+                this.nodes.telemetryStatus.addEventListener('click', () => this.handleStatusTap('motion'));
+                this.nodes.gpsStatus.addEventListener('click', () => this.handleStatusTap('gps'));
             }
 
             handleResize() {
@@ -160,6 +164,19 @@
                 this.renderLoop();
             }
 
+            async handleStatusTap(type) {
+                if (!this.state.isRunning) {
+                    await this.bootSequence();
+                    return;
+                }
+
+                if (type === 'motion') {
+                    await this.initMotion(true);
+                } else if (type === 'gps') {
+                    this.initGPS(true);
+                }
+            }
+
             updateStatus(dotNode, textNode, state, text) {
                 textNode.textContent = text;
                 dotNode.className = `w-2.5 h-2.5 rounded-full ${
@@ -169,7 +186,7 @@
                 }`;
             }
 
-            async initMotion() {
+            async initMotion(force = false) {
                 const hasMotionAPI = typeof DeviceMotionEvent !== 'undefined';
                 if (!hasMotionAPI) {
                     this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'err', 'NO SENSOR');
@@ -194,7 +211,7 @@
                     }
                 }
 
-                if (this.motionListenerAttached) return;
+                if (this.motionListenerAttached && !force) return;
                 this.motionListenerAttached = true;
 
                 window.addEventListener('devicemotion', (e) => {
@@ -247,7 +264,7 @@
                 }
             }
 
-            initGPS() {
+            initGPS(force = false) {
                 if (!navigator.geolocation) {
                     this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'NO GPS');
                     this.nodes.split.textContent = '0:00';
@@ -264,6 +281,7 @@
 
                 if (this.gpsWatchId !== null) {
                     navigator.geolocation.clearWatch(this.gpsWatchId);
+                    this.gpsWatchId = null;
                 }
 
                 const positionOptions = {
