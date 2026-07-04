@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RowCoach Pro - Daylight</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { 
+            font-family: 'Inter', sans-serif;
+            touch-action: none; 
+            overflow: hidden; 
+            user-select: none; 
+            -webkit-user-select: none;
+            background-color: #f8fafc; /* tailwind slate-50 */
+        }
+        .tabular { font-variant-numeric: tabular-nums; }
+        
+        /* Subtle dark grid for the light canvas background */
+        .bg-grid-pattern-light {
+            background-image: 
+                linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        .text-fluid-huge { font-size: clamp(5rem, 18vw, 10rem); line-height: 1; }
+        .text-fluid-large { font-size: clamp(3.5rem, 14vw, 8rem); line-height: 1; }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900 h-screen flex flex-col p-3 gap-3">
+
+    <header class="flex justify-between items-center p-3 rounded-2xl bg-white/60 backdrop-blur-md border border-white shadow-sm shrink-0">
+        <div class="flex items-center gap-2">
+            <div id="status-accel-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]"></div>
+            <div class="flex flex-col">
+                <span class="text-[9px] text-slate-400 uppercase tracking-widest font-bold">Surge Telemetry</span>
+                <span id="debugAccel" class="text-xs font-mono text-slate-700 font-bold tabular">STANDBY</span>
+            </div>
+        </div>
+
+        <div class="text-sm font-black tracking-widest text-slate-400 uppercase">
+            Row<span class="text-emerald-500">Coach</span>
+        </div>
+
+        <div class="flex items-center gap-2 text-right">
+            <div class="flex flex-col">
+                <span class="text-[9px] text-slate-400 uppercase tracking-widest font-bold">GPS Satellites</span>
+                <span id="debugGPS" class="text-xs font-mono text-slate-700 font-bold tabular">SEARCHING</span>
+            </div>
+            <div id="status-gps-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]"></div>
+        </div>
+    </header>
+
+    <main class="flex-1 flex flex-col sm:flex-row gap-3">
+        
+        <div class="flex-1 rounded-3xl bg-white border border-slate-200 flex flex-col justify-center relative overflow-hidden shadow-xl shadow-slate-200/50">
+            <div class="flex flex-col items-center z-10">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    <span class="text-slate-500 font-bold uppercase tracking-[0.2em] text-xs">Stroke Rate</span>
+                </div>
+                <span id="ui-spm" class="text-fluid-huge font-black text-slate-900 tabular tracking-tighter">00</span>
+                <span class="text-slate-400 font-extrabold tracking-widest mt-1 text-sm uppercase">SPM</span>
+            </div>
+        </div>
+        
+        <div class="flex-1 rounded-3xl bg-white border border-slate-200 flex flex-col justify-center relative overflow-hidden shadow-xl shadow-slate-200/50">
+            <div class="flex flex-col items-center z-10">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span class="text-slate-500 font-bold uppercase tracking-[0.2em] text-xs">500m Pace</span>
+                </div>
+                <span id="ui-split" class="text-fluid-large font-black text-slate-900 tabular tracking-tighter">0:00</span>
+                <span class="text-slate-400 font-extrabold tracking-widest mt-1 text-sm uppercase">/ 500m</span>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="h-1/4 rounded-3xl bg-white border border-slate-200 overflow-hidden relative shadow-inner shrink-0">
+        <div class="absolute inset-0 bg-grid-pattern-light opacity-60"></div>
+        <canvas id="canvas" class="absolute inset-0 w-full h-full z-10"></canvas>
+        <div class="absolute top-3 left-4 z-20 flex items-center gap-2 bg-white/80 px-2 py-1 rounded-md backdrop-blur-sm border border-slate-100">
+            <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
+            <span class="text-slate-500 text-[10px] uppercase font-bold tracking-widest">Live Drive Curve</span>
+        </div>
+    </footer>
+
+    <div id="start-overlay" class="absolute inset-0 z-50 bg-slate-100/90 backdrop-blur-md flex items-center justify-center p-6">
+        <button id="btn-start" class="w-full max-w-sm bg-slate-900 hover:bg-slate-800 text-white shadow-2xl shadow-slate-900/30 font-black text-xl py-6 rounded-2xl active:scale-95 transition-all uppercase tracking-widest border border-slate-700">
+            Initialize Session
+        </button>
+    </div>
+
+    <script>
+        class SensorEngine {
+            constructor() {
+                this.nodes = {
+                    spm: document.getElementById('ui-spm'),
+                    split: document.getElementById('ui-split'),
+                    btn: document.getElementById('btn-start'),
+                    overlay: document.getElementById('start-overlay'),
+                    canvas: document.getElementById('canvas'),
+                    dbgAccel: document.getElementById('debugAccel'),
+                    dbgGPS: document.getElementById('debugGPS'),
+                    dotAccel: document.getElementById('status-accel-dot'),
+                    dotGPS: document.getElementById('status-gps-dot')
+                };
+
+                this.ctx = this.nodes.canvas.getContext('2d');
+                
+                this.state = {
+                    history: Array(120).fill(0),
+                    gravityY: 0,
+                    baseline: 0,
+                    smoothedAccel: 0,
+                    lastPeakTime: 0,
+                    peakState: 'SEEKING_PEAK',
+                    peakMax: 0,
+                    isRunning: false
+                };
+
+                this.bindEvents();
+                this.handleResize();
+            }
+
+            bindEvents() {
+                window.addEventListener('resize', () => this.handleResize());
+                this.nodes.btn.addEventListener('click', () => this.bootSequence());
+            }
+
+            handleResize() {
+                const { canvas } = this.nodes;
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = canvas.clientWidth * dpr;
+                canvas.height = canvas.clientHeight * dpr;
+                this.ctx.scale(dpr, dpr);
+            }
+
+            async bootSequence() {
+                if (this.state.isRunning) return;
+                
+                this.nodes.overlay.style.opacity = '0';
+                this.nodes.overlay.style.transition = 'opacity 0.3s ease';
+                setTimeout(() => this.nodes.overlay.style.display = 'none', 300);
+
+                try {
+                    if ('wakeLock' in navigator) await navigator.wakeLock.request('screen');
+                } catch (e) { console.warn("Wake lock failed", e); }
+
+                this.initMotion();
+                this.initGPS();
+                
+                this.state.isRunning = true;
+                this.renderLoop();
+            }
+
+            updateStatus(dotNode, textNode, state, text) {
+                textNode.textContent = text;
+                dotNode.className = `w-2.5 h-2.5 rounded-full ${
+                    state === 'ok' ? 'bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.2)]' : 
+                    state === 'err' ? 'bg-red-500 shadow-[0_0_0_2px_rgba(239,68,68,0.2)]' : 
+                    'bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]'
+                }`;
+            }
+
+            initMotion() {
+                window.addEventListener('devicemotion', (e) => {
+                    const raw = e.acceleration || e.accelerationIncludingGravity;
+                    if (!raw || raw.y === null) {
+                        this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'err', 'NO SENSOR');
+                        return;
+                    }
+
+                    this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'ok', 'ACTIVE');
+
+                    this.state.gravityY = (this.state.gravityY * 0.8) + (raw.y * 0.2);
+                    const linearY = e.acceleration ? raw.y : raw.y - this.state.gravityY;
+                    this.state.baseline = (this.state.baseline * 0.98) + (linearY * 0.02);
+                    const normalizedForce = linearY - this.state.baseline;
+                    this.state.smoothedAccel = (this.state.smoothedAccel * 0.8) + (normalizedForce * 0.2);
+
+                    this.state.history.push(this.state.smoothedAccel);
+                    this.state.history.shift();
+
+                    this.detectDynamicStroke(this.state.smoothedAccel);
+                });
+            }
+
+            detectDynamicStroke(currentForce) {
+                const now = performance.now();
+                const INITIAL_TRIGGER = 0.8; 
+                const DROP_REQUIRED = 0.6;   
+
+                if (this.state.peakState === 'SEEKING_PEAK') {
+                    if (currentForce > INITIAL_TRIGGER && (now - this.state.lastPeakTime) > 1000) {
+                        this.state.peakMax = currentForce;
+                        this.state.peakState = 'CONFIRMING_DROP';
+                    }
+                } else if (this.state.peakState === 'CONFIRMING_DROP') {
+                    if (currentForce > this.state.peakMax) {
+                        this.state.peakMax = currentForce; 
+                    }
+                    if (currentForce < this.state.peakMax - DROP_REQUIRED) {
+                        if (this.state.lastPeakTime > 0) {
+                            const timeDeltaSec = (now - this.state.lastPeakTime) / 1000;
+                            const spm = Math.round(60 / timeDeltaSec);
+                            if (spm >= 12 && spm <= 55) {
+                                this.nodes.spm.textContent = spm;
+                            }
+                        }
+                        this.state.lastPeakTime = now;
+                        this.state.peakState = 'SEEKING_PEAK';
+                    }
+                }
+            }
+
+            initGPS() {
+                if (!navigator.geolocation) {
+                    this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'NO GPS');
+                    return;
+                }
+
+                navigator.geolocation.watchPosition(
+                    (pos) => {
+                        const speedMs = pos.coords.speed;
+                        
+                        if (speedMs !== null) {
+                            this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'ok', 'LOCKED');
+                        }
+
+                        if (speedMs && speedMs > 0.5) {
+                            const secPer500 = 500 / speedMs;
+                            const m = Math.floor(secPer500 / 60);
+                            const s = Math.floor(secPer500 % 60).toString().padStart(2, '0');
+                            this.nodes.split.textContent = `${m}:${s}`;
+                        } else {
+                            this.nodes.split.textContent = "0:00";
+                        }
+                    },
+                    (err) => { 
+                        this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'DROPPED');
+                    },
+                    { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+                );
+            }
+
+            renderLoop() {
+                const { canvas } = this.nodes;
+                const w = canvas.clientWidth;
+                const h = canvas.clientHeight;
+                
+                this.ctx.clearRect(0, 0, w, h);
+
+                // Zero-line (Darker for light theme)
+                this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(0, h / 2);
+                this.ctx.lineTo(w, h / 2);
+                this.ctx.stroke();
+
+                // Telemetry Line (Vibrant Emerald, no glow needed on white)
+                this.ctx.strokeStyle = '#10b981'; // Tailwind emerald-500
+                this.ctx.lineWidth = 4;
+                this.ctx.lineCap = 'round';
+                this.ctx.lineJoin = 'round';
+
+                this.ctx.beginPath();
+
+                this.state.history.forEach((val, i) => {
+                    const x = (i / (this.state.history.length - 1)) * w;
+                    const y = (h / 2) - (val * 18); 
+                    i === 0 ? this.ctx.moveTo(x, y) : this.ctx.lineTo(x, y);
+                });
+                
+                this.ctx.stroke();
+                
+                requestAnimationFrame(() => this.renderLoop());
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            window.app = new SensorEngine();
+        });
+    </script>
+</body>
+</html>
