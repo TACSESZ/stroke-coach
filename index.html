@@ -123,6 +123,7 @@
                 };
 
                 this.gpsWatchId = null;
+                this.motionListenerAttached = false;
 
                 this.bindEvents();
                 this.handleResize();
@@ -152,7 +153,7 @@
                     if ('wakeLock' in navigator) await navigator.wakeLock.request('screen');
                 } catch (e) { console.warn("Wake lock failed", e); }
 
-                this.initMotion();
+                await this.initMotion();
                 this.initGPS();
                 
                 this.state.isRunning = true;
@@ -168,9 +169,36 @@
                 }`;
             }
 
-            initMotion() {
+            async initMotion() {
+                const hasMotionAPI = typeof DeviceMotionEvent !== 'undefined';
+                if (!hasMotionAPI) {
+                    this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'err', 'NO SENSOR');
+                    return;
+                }
+
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                const needsPermission = typeof DeviceMotionEvent.requestPermission === 'function';
+
+                if (needsPermission && isIOS) {
+                    this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'idle', 'REQUESTING');
+                    try {
+                        const permission = await DeviceMotionEvent.requestPermission();
+                        if (permission !== 'granted') {
+                            this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'err', 'PERMISSION');
+                            return;
+                        }
+                    } catch (e) {
+                        console.warn('Motion permission rejected', e);
+                        this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'err', 'PERMISSION');
+                        return;
+                    }
+                }
+
+                if (this.motionListenerAttached) return;
+                this.motionListenerAttached = true;
+
                 window.addEventListener('devicemotion', (e) => {
-                    const raw = e.acceleration || e.accelerationIncludingGravity;
+                    const raw = e.accelerationIncludingGravity || e.acceleration;
                     if (!raw || raw.y === null) {
                         this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, 'err', 'NO SENSOR');
                         return;
