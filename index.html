@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>RowCoach Pro - Daylight</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght=500;700;900&display=swap" rel="stylesheet">
     <style>
         body { 
             font-family: 'Inter', sans-serif;
@@ -13,11 +13,10 @@
             overflow: hidden; 
             user-select: none; 
             -webkit-user-select: none;
-            background-color: #f8fafc; /* tailwind slate-50 */
+            background-color: #f8fafc;
         }
         .tabular { font-variant-numeric: tabular-nums; }
         
-        /* Subtle dark grid for the light canvas background */
         .bg-grid-pattern-light {
             background-image: 
                 linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
@@ -113,7 +112,7 @@
             constructor(options = {}) {
                 super();
                 this.onStrokeDetected = typeof options.onStrokeDetected === 'function' ? options.onStrokeDetected : null;
-                this.alpha = options.alpha ?? 0.2;
+                this.alpha = options.alpha ?? 0.2; // For surge signal smoothing
                 this.threshold = options.threshold ?? -1.5;
                 this.lockoutMs = options.lockoutMs ?? 1200;
                 this.isRunning = false;
@@ -122,8 +121,10 @@
                 this.lastSmoothed = null;
                 this.lastCatchTime = 0;
                 this.lockedUntil = 0;
+                
+                // Gravity isolation variables
                 this.gravityEstimate = 0;
-                this.gravityAlpha = 0.9;
+                this.gravityAlpha = 0.8; // Lower alpha responds quicker to orientation changes
             }
 
             async start(force = false) {
@@ -131,7 +132,8 @@
                 if (force) this.stop();
                 this.isRunning = true;
 
-                const sensorStarted = await this.startLinearAccelerationSensor();
+                // Use base Accelerometer (with gravity) so we can explicitly isolate it uniformly
+                const sensorStarted = await this.startAccelerometerSensor();
                 if (!sensorStarted) {
                     await this.startDeviceMotionFallback();
                 }
@@ -143,7 +145,7 @@
                     try {
                         this.sensor.stop();
                     } catch (e) {
-                        console.warn('LinearAccelerationSensor stop failed', e);
+                        console.warn('Accelerometer stop failed', e);
                     }
                     this.sensor = null;
                 }
@@ -154,8 +156,8 @@
                 }
             }
 
-            async startLinearAccelerationSensor() {
-                if (!('LinearAccelerationSensor' in window)) {
+            async startAccelerometerSensor() {
+                if (!('Accelerometer' in window)) {
                     return false;
                 }
 
@@ -166,19 +168,19 @@
                 }
 
                 try {
-                    this.sensor = new LinearAccelerationSensor({ frequency: 50 });
+                    this.sensor = new Accelerometer({ frequency: 50 });
                     this.sensor.addEventListener('reading', () => {
                         this.publishStatus('ok', 'ACTIVE');
-                        this.handleSample({ x: this.sensor.x, y: this.sensor.y, z: this.sensor.z });
+                        this.handleRawSample(this.sensor.y ?? 0);
                     });
                     this.sensor.addEventListener('error', event => {
-                        console.warn('LinearAccelerationSensor error', event.error);
+                        console.warn('Accelerometer error', event.error);
                         this.publishStatus('err', 'SENSOR');
                     });
                     this.sensor.start();
                     return true;
                 } catch (error) {
-                    console.warn('Failed to start LinearAccelerationSensor', error);
+                    console.warn('Failed to start Accelerometer', error);
                     return false;
                 }
             }
@@ -187,12 +189,10 @@
                 if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
                     return true;
                 }
-
                 try {
                     const result = await navigator.permissions.query({ name: sensorName });
                     if (result.state === 'granted') return true;
                     if (result.state === 'denied') return false;
-
                     return new Promise(resolve => {
                         result.onchange = () => resolve(result.state === 'granted');
                     });
@@ -223,6 +223,7 @@
                 }
 
                 this.motionListener = event => {
+                    // Prefer accelerationIncludingGravity to explicitly track and subtract it
                     const raw = event.accelerationIncludingGravity || event.acceleration;
                     if (!raw || raw.y === null || raw.y === undefined) {
                         this.publishStatus('err', 'NO SENSOR');
@@ -230,20 +231,26 @@
                     }
 
                     this.publishStatus('ok', 'ACTIVE');
-
-                    const linearY = event.acceleration ? raw.y : raw.y - this.gravityEstimate;
-                    if (!event.acceleration) {
-                        this.gravityEstimate = (this.gravityEstimate * this.gravityAlpha) + (raw.y * (1 - this.gravityAlpha));
+                    
+                    if (event.accelerationIncludingGravity) {
+                        this.handleRawSample(raw.y);
+                    } else {
+                        // If device completely isolates it via hardware already, bypass our low-pass filter
+                        this.handleIsolatedSample(raw.y);
                     }
-
-                    this.handleSample({ x: raw.x ?? 0, y: linearY, z: raw.z ?? 0 });
                 };
 
                 window.addEventListener('devicemotion', this.motionListener);
             }
 
-            handleSample(sample) {
-                const forwardAccel = sample.y ?? 0;
+            // Low-pass filter to isolate gravity component, then subtract it to find linear surge
+            handleRawSample(rawY) {
+                this.gravityEstimate = (this.gravityAlpha * this.gravityEstimate) + ((1 - this.gravityAlpha) * rawY);
+                const linearY = rawY - this.gravityEstimate;
+                this.handleIsolatedSample(linearY);
+            }
+
+            handleIsolatedSample(forwardAccel) {
                 const smoothed = this.lastSmoothed === null
                     ? forwardAccel
                     : (this.alpha * forwardAccel) + ((1 - this.alpha) * this.lastSmoothed);
