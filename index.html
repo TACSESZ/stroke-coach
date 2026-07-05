@@ -25,11 +25,11 @@
             background-size: 20px 20px;
         }
 
-        .text-fluid-huge { font-size: clamp(5rem, 18vw, 10rem); line-height: 1; }
-        .text-fluid-large { font-size: clamp(3.5rem, 14vw, 8rem); line-height: 1; }
+        .text-fluid-huge { font-size: clamp(3.5rem, 16vw, 8rem); line-height: 1; }
+        .text-fluid-large { font-size: clamp(2.5rem, 12vw, 6.5rem); line-height: 1; }
     </style>
 </head>
-<body class="bg-slate-100 text-slate-900 h-screen flex flex-col p-3 gap-3">
+<body class="bg-slate-100 text-slate-900 h-dvh flex flex-col p-3 gap-2.5">
 
     <header class="flex justify-between items-center p-3 rounded-2xl bg-white/60 backdrop-blur-md border border-white shadow-sm shrink-0">
         <button type="button" id="telemetry-status" class="flex items-center gap-2 text-left bg-transparent border-0 p-0 cursor-pointer focus:outline-none">
@@ -53,52 +53,52 @@
         </button>
     </header>
 
-    <main class="flex-1 flex flex-col sm:flex-row gap-3">
+    <main class="flex-1 flex flex-col sm:flex-row gap-2.5 min-h-0">
         
-        <div class="flex-1 rounded-3xl bg-white border border-slate-200 flex flex-col justify-center relative overflow-hidden shadow-xl shadow-slate-200/50">
+        <div class="flex-1 rounded-3xl bg-white border border-slate-200 flex flex-col justify-center relative overflow-hidden shadow-xl shadow-slate-200/50 p-2">
             <div class="flex flex-col items-center z-10">
-                <div class="flex items-center gap-2 mb-2">
-                    <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                    <span class="text-slate-500 font-bold uppercase tracking-[0.2em] text-xs">Stroke Rate</span>
+                <div class="flex items-center gap-2 mb-1">
+                    <svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    <span class="text-slate-500 font-bold uppercase tracking-[0.2em] text-[10px]">Stroke Rate</span>
                 </div>
                 <span id="ui-spm" class="text-fluid-huge font-black text-slate-900 tabular tracking-tighter">00</span>
-                <span class="text-slate-400 font-extrabold tracking-widest mt-1 text-sm uppercase">SPM</span>
+                <span class="text-slate-400 font-extrabold tracking-widest mt-0.5 text-xs uppercase">SPM</span>
             </div>
         </div>
         
-        <div class="flex-1 rounded-3xl bg-white border border-slate-200 flex flex-col justify-center relative overflow-hidden shadow-xl shadow-slate-200/50">
+        <div class="flex-1 rounded-3xl bg-white border border-slate-200 flex flex-col justify-center relative overflow-hidden shadow-xl shadow-slate-200/50 p-2">
             <div class="flex flex-col items-center z-10">
-                <div class="flex items-center gap-2 mb-2">
-                    <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    <span class="text-slate-500 font-bold uppercase tracking-[0.2em] text-xs">500m Pace</span>
+                <div class="flex items-center gap-2 mb-1">
+                    <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span class="text-slate-500 font-bold uppercase tracking-[0.2em] text-[10px]">500m Pace</span>
                 </div>
                 <span id="ui-split" class="text-fluid-large font-black text-slate-900 tabular tracking-tighter">0:00</span>
-                <span class="text-slate-400 font-extrabold tracking-widest mt-1 text-sm uppercase">/ 500m</span>
+                <span class="text-slate-400 font-extrabold tracking-widest mt-0.5 text-xs uppercase">/ 500m</span>
             </div>
         </div>
 
     </main>
 
-    <section class="grid gap-3">
-        <div class="rounded-3xl bg-white border border-slate-200 p-4 shadow-xl shadow-slate-200/50">
-            <div class="flex items-center justify-between mb-3">
+    <section class="shrink-0">
+        <div class="rounded-3xl bg-white border border-slate-200 p-3.5 shadow-xl shadow-slate-200/50">
+            <div class="flex items-center justify-between mb-1.5">
                 <div>
-                    <p class="text-slate-500 uppercase text-[10px] tracking-[0.3em] font-bold">Catch Threshold</p>
-                    <p id="catch-threshold-label" class="text-slate-900 font-black text-2xl tracking-tight">-1.5 m/s²</p>
+                    <p class="text-slate-500 uppercase text-[9px] tracking-[0.3em] font-bold">Catch Threshold</p>
+                    <p id="catch-threshold-label" class="text-slate-900 font-black text-xl tracking-tight">-1.5 m/s²</p>
                 </div>
-                <div class="text-slate-400 text-right text-xs uppercase tracking-wide">Adjust sensitivity</div>
+                <div class="text-slate-400 text-right text-[10px] uppercase tracking-wide">Adjust sensitivity</div>
             </div>
-            <input id="catch-threshold-slider" type="range" min="-3" max="-0.2" step="0.05" value="-1.5" class="w-full accent-emerald-500">
-            <p class="mt-3 text-slate-500 text-sm">Lower values require stronger deceleration for a catch; higher values make detection more sensitive.</p>
+            <input id="catch-threshold-slider" type="range" min="-3" max="-0.2" step="0.05" value="-1.5" class="w-full accent-emerald-500 cursor-pointer">
+            <p class="mt-1.5 text-slate-400 text-[11px] leading-tight">Lower values require stronger deceleration for a catch; higher values increase sensitivity.</p>
         </div>
     </section>
 
-    <footer class="h-1/4 rounded-3xl bg-white border border-slate-200 overflow-hidden relative shadow-inner shrink-0">
+    <footer class="h-1/5 rounded-3xl bg-white border border-slate-200 overflow-hidden relative shadow-inner shrink-0 min-h-[80px]">
         <div class="absolute inset-0 bg-grid-pattern-light opacity-60"></div>
         <canvas id="canvas" class="absolute inset-0 w-full h-full z-10"></canvas>
-        <div class="absolute top-3 left-4 z-20 flex items-center gap-2 bg-white/80 px-2 py-1 rounded-md backdrop-blur-sm border border-slate-100">
-            <div class="w-2 h-2 rounded-full bg-emerald-500"></div>
-            <span class="text-slate-500 text-[10px] uppercase font-bold tracking-widest">Live Drive Curve</span>
+        <div class="absolute top-2 left-3 z-20 flex items-center gap-1.5 bg-white/80 px-1.5 py-0.5 rounded border border-slate-100">
+            <div class="w-1.5 h-1.5 rounded-full bg-emerald-500"></div>
+            <span class="text-slate-500 text-[9px] uppercase font-bold tracking-widest">Live Drive Curve</span>
         </div>
     </footer>
 
