@@ -108,427 +108,406 @@
     </div>
 
     <script>
-        class RowingDataPipeline extends EventTarget {
-            constructor(options = {}) {
-                super();
-                this.onStrokeDetected = typeof options.onStrokeDetected === 'function' ? options.onStrokeDetected : null;
-                this.alpha = options.alpha ?? 0.2; // For surge signal smoothing
-                this.threshold = options.threshold ?? -1.5;
-                this.lockoutMs = options.lockoutMs ?? 1200;
-                this.isRunning = false;
-                this.sensor = null;
-                this.motionListener = null;
-                this.lastSmoothed = null;
-                this.lastCatchTime = 0;
-                this.lockedUntil = 0;
-                
-                // Gravity isolation variables
-                this.gravityEstimate = 0;
-                this.gravityAlpha = 0.8; // Lower alpha responds quicker to orientation changes
-            }
+        class Simple1DKalman {
+    constructor(processNoise = 0.005, measurementNoise = 0.1, estimatedError = 1.0) {
+        this.q = processNoise;      // Q: Process noise (how fast we expect the actual acceleration to change)
+        this.r = measurementNoise;  // R: Measurement noise (how noisy the phone's accelerometer is)
+        this.p = estimatedError;    // P: Estimation error covariance
+        this.x = null;              // X: The estimated state (smoothed acceleration)
+    }
 
-            async start(force = false) {
-                if (this.isRunning && !force) return;
-                if (force) this.stop();
-                this.isRunning = true;
+    update(measurement) {
+        if (this.x === null) {
+            this.x = measurement;
+            return this.x;
+        }
 
-                // Use base Accelerometer (with gravity) so we can explicitly isolate it uniformly
-                const sensorStarted = await this.startAccelerometerSensor();
-                if (!sensorStarted) {
-                    await this.startDeviceMotionFallback();
-                }
-            }
+        // 1. Prediction Step
+        this.p = this.p + this.q;
 
-            stop() {
-                this.isRunning = false;
-                if (this.sensor) {
-                    try {
-                        this.sensor.stop();
-                    } catch (e) {
-                        console.warn('Accelerometer stop failed', e);
-                    }
-                    this.sensor = null;
-                }
+        // 2. Update Step
+        const k = this.p / (this.p + this.r); // Calculate Kalman Gain
+        this.x = this.x + k * (measurement - this.x);
+        this.p = (1 - k) * this.p;
 
-                if (this.motionListener) {
-                    window.removeEventListener('devicemotion', this.motionListener);
-                    this.motionListener = null;
-                }
-            }
+        return this.x;
+    }
+}
 
-            async startAccelerometerSensor() {
-                if (!('Accelerometer' in window)) {
-                    return false;
-                }
+class RowingDataPipeline extends EventTarget {
+    constructor(options = {}) {
+        super();
+        this.onStrokeDetected = typeof options.onStrokeDetected === 'function' ? options.onStrokeDetected : null;
+        
+        // Initialize Kalman filter for surge signal (replaces static alpha EMA)
+        this.kalman = new Simple1DKalman(
+            options.kalmanQ ?? 0.005, // Process Noise
+            options.kalmanR ?? 0.1    // Measurement Noise
+        );
+        
+        this.threshold = options.threshold ?? -1.5;
+        this.lockoutMs = options.lockoutMs ?? 1200;
+        this.isRunning = false;
+        this.sensor = null;
+        this.motionListener = null;
+        this.lastSmoothed = null;
+        this.lastCatchTime = 0;
+        this.lockedUntil = 0;
+        
+        // Gravity isolation variables (kept as EMA since gravity vector changes slowly)
+        this.gravityEstimate = 0;
+        this.gravityAlpha = 0.8; 
+    }
 
-                const permissionGranted = await this.requestSensorPermission('accelerometer');
-                if (!permissionGranted) {
+    async start(force = false) {
+        if (this.isRunning && !force) return;
+        if (force) this.stop();
+        this.isRunning = true;
+
+        const sensorStarted = await this.startAccelerometerSensor();
+        if (!sensorStarted) {
+            await this.startDeviceMotionFallback();
+        }
+    }
+
+    stop() {
+        this.isRunning = false;
+        if (this.sensor) {
+            try { this.sensor.stop(); } catch (e) { console.warn('Accelerometer stop failed', e); }
+            this.sensor = null;
+        }
+        if (this.motionListener) {
+            window.removeEventListener('devicemotion', this.motionListener);
+            this.motionListener = null;
+        }
+    }
+
+    async startAccelerometerSensor() {
+        if (!('Accelerometer' in window)) return false;
+        const permissionGranted = await this.requestSensorPermission('accelerometer');
+        if (!permissionGranted) {
+            this.publishStatus('err', 'PERMISSION');
+            return false;
+        }
+        try {
+            this.sensor = new Accelerometer({ frequency: 50 });
+            this.sensor.addEventListener('reading', () => {
+                this.publishStatus('ok', 'ACTIVE');
+                this.handleRawSample(this.sensor.y ?? 0);
+            });
+            this.sensor.addEventListener('error', event => {
+                console.warn('Accelerometer error', event.error);
+                this.publishStatus('err', 'SENSOR');
+            });
+            this.sensor.start();
+            return true;
+        } catch (error) {
+            console.warn('Failed to start Accelerometer', error);
+            return false;
+        }
+    }
+
+    async requestSensorPermission(sensorName) {
+        if (!navigator.permissions || typeof navigator.permissions.query !== 'function') return true;
+        try {
+            const result = await navigator.permissions.query({ name: sensorName });
+            if (result.state === 'granted') return true;
+            if (result.state === 'denied') return false;
+            return new Promise(resolve => {
+                result.onchange = () => resolve(result.state === 'granted');
+            });
+        } catch (error) {
+            return true;
+        }
+    }
+
+    async startDeviceMotionFallback() {
+        if (typeof DeviceMotionEvent === 'undefined') {
+            this.publishStatus('err', 'NO SENSOR');
+            return;
+        }
+        if (typeof DeviceMotionEvent.requestPermission === 'function') {
+            try {
+                this.publishStatus('idle', 'REQUESTING');
+                const permission = await DeviceMotionEvent.requestPermission();
+                if (permission !== 'granted') {
                     this.publishStatus('err', 'PERMISSION');
-                    return false;
-                }
-
-                try {
-                    this.sensor = new Accelerometer({ frequency: 50 });
-                    this.sensor.addEventListener('reading', () => {
-                        this.publishStatus('ok', 'ACTIVE');
-                        this.handleRawSample(this.sensor.y ?? 0);
-                    });
-                    this.sensor.addEventListener('error', event => {
-                        console.warn('Accelerometer error', event.error);
-                        this.publishStatus('err', 'SENSOR');
-                    });
-                    this.sensor.start();
-                    return true;
-                } catch (error) {
-                    console.warn('Failed to start Accelerometer', error);
-                    return false;
-                }
-            }
-
-            async requestSensorPermission(sensorName) {
-                if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
-                    return true;
-                }
-                try {
-                    const result = await navigator.permissions.query({ name: sensorName });
-                    if (result.state === 'granted') return true;
-                    if (result.state === 'denied') return false;
-                    return new Promise(resolve => {
-                        result.onchange = () => resolve(result.state === 'granted');
-                    });
-                } catch (error) {
-                    return true;
-                }
-            }
-
-            async startDeviceMotionFallback() {
-                if (typeof DeviceMotionEvent === 'undefined') {
-                    this.publishStatus('err', 'NO SENSOR');
                     return;
                 }
-
-                if (typeof DeviceMotionEvent.requestPermission === 'function') {
-                    try {
-                        this.publishStatus('idle', 'REQUESTING');
-                        const permission = await DeviceMotionEvent.requestPermission();
-                        if (permission !== 'granted') {
-                            this.publishStatus('err', 'PERMISSION');
-                            return;
-                        }
-                    } catch (error) {
-                        console.warn('DeviceMotion permission rejected', error);
-                        this.publishStatus('err', 'PERMISSION');
-                        return;
-                    }
-                }
-
-                this.motionListener = event => {
-                    // Prefer accelerationIncludingGravity to explicitly track and subtract it
-                    const raw = event.accelerationIncludingGravity || event.acceleration;
-                    if (!raw || raw.y === null || raw.y === undefined) {
-                        this.publishStatus('err', 'NO SENSOR');
-                        return;
-                    }
-
-                    this.publishStatus('ok', 'ACTIVE');
-                    
-                    if (event.accelerationIncludingGravity) {
-                        this.handleRawSample(raw.y);
-                    } else {
-                        // If device completely isolates it via hardware already, bypass our low-pass filter
-                        this.handleIsolatedSample(raw.y);
-                    }
-                };
-
-                window.addEventListener('devicemotion', this.motionListener);
-            }
-
-            // Low-pass filter to isolate gravity component, then subtract it to find linear surge
-            handleRawSample(rawY) {
-                this.gravityEstimate = (this.gravityAlpha * this.gravityEstimate) + ((1 - this.gravityAlpha) * rawY);
-                const linearY = rawY - this.gravityEstimate;
-                this.handleIsolatedSample(linearY);
-            }
-
-            handleIsolatedSample(forwardAccel) {
-                const smoothed = this.lastSmoothed === null
-                    ? forwardAccel
-                    : (this.alpha * forwardAccel) + ((1 - this.alpha) * this.lastSmoothed);
-
-                const previousSmoothed = this.lastSmoothed;
-                this.lastSmoothed = smoothed;
-
-                this.dispatchEvent(new CustomEvent('telemetry', {
-                    detail: {
-                        rawAcceleration: forwardAccel,
-                        smoothedAcceleration: smoothed
-                    }
-                }));
-
-                this.detectCatch(previousSmoothed, smoothed);
-            }
-
-            detectCatch(previousSmoothed, currentSmoothed) {
-                const now = performance.now();
-                if (now < this.lockedUntil) return;
-                if (previousSmoothed !== null && previousSmoothed > this.threshold && currentSmoothed <= this.threshold) {
-                    if (this.lastCatchTime > 0) {
-                        const deltaSec = (now - this.lastCatchTime) / 1000;
-                        const strokeRateSPM = Math.round(60 / deltaSec);
-                        if (strokeRateSPM >= 12 && strokeRateSPM <= 50) {
-                            this.emitStroke(strokeRateSPM);
-                        }
-                    }
-                    this.lastCatchTime = now;
-                    this.lockedUntil = now + this.lockoutMs;
-                }
-            }
-
-            emitStroke(strokeRateSPM) {
-                if (this.onStrokeDetected) {
-                    this.onStrokeDetected(strokeRateSPM);
-                }
-                this.dispatchEvent(new CustomEvent('strokeDetected', { detail: { strokeRateSPM } }));
-            }
-
-            publishStatus(state, text) {
-                this.dispatchEvent(new CustomEvent('status', { detail: { state, text } }));
+            } catch (error) {
+                console.warn('DeviceMotion permission rejected', error);
+                this.publishStatus('err', 'PERMISSION');
+                return;
             }
         }
 
-        class SensorEngine {
-            constructor() {
-                this.nodes = {
-                    spm: document.getElementById('ui-spm'),
-                    split: document.getElementById('ui-split'),
-                    btn: document.getElementById('btn-start'),
-                    overlay: document.getElementById('start-overlay'),
-                    canvas: document.getElementById('canvas'),
-                    dbgAccel: document.getElementById('debugAccel'),
-                    dbgGPS: document.getElementById('debugGPS'),
-                    dotAccel: document.getElementById('status-accel-dot'),
-                    dotGPS: document.getElementById('status-gps-dot'),
-                    telemetryStatus: document.getElementById('telemetry-status'),
-                    gpsStatus: document.getElementById('gps-status')
-                };
-
-                this.ctx = this.nodes.canvas.getContext('2d');
-
-                this.state = {
-                    history: Array(225).fill(0),
-                    isRunning: false
-                };
-
-                this.gpsWatchId = null;
-                this.nodes.thresholdLabel = document.getElementById('catch-threshold-label');
-                this.nodes.thresholdSlider = document.getElementById('catch-threshold-slider');
-
-                this.pipeline = new RowingDataPipeline({
-                    onStrokeDetected: (strokeRateSPM) => {
-                        this.nodes.spm.textContent = strokeRateSPM;
-                    }
-                });
-
-                this.pipeline.addEventListener('status', event => {
-                    const { state, text } = event.detail;
-                    this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, state, text);
-                });
-
-                this.pipeline.addEventListener('telemetry', event => {
-                    const { smoothedAcceleration } = event.detail;
-                    const driveValue = Number.isFinite(smoothedAcceleration)
-                        ? Math.max(0.08, Math.abs(smoothedAcceleration) + 0.04)
-                        : 0.08;
-
-                    this.state.history.push(driveValue);
-                    this.state.history.shift();
-                });
-
-                this.bindEvents();
-                this.handleResize();
-                this.attachThresholdControl();
+        this.motionListener = event => {
+            const raw = event.accelerationIncludingGravity || event.acceleration;
+            if (!raw || raw.y === null || raw.y === undefined) {
+                this.publishStatus('err', 'NO SENSOR');
+                return;
             }
-
-            bindEvents() {
-                window.addEventListener('resize', () => this.handleResize());
-                this.nodes.btn.addEventListener('click', () => this.bootSequence());
-                this.nodes.telemetryStatus.addEventListener('click', () => this.handleStatusTap('motion'));
-                this.nodes.gpsStatus.addEventListener('click', () => this.handleStatusTap('gps'));
+            this.publishStatus('ok', 'ACTIVE');
+            
+            if (event.accelerationIncludingGravity) {
+                this.handleRawSample(raw.y);
+            } else {
+                this.handleIsolatedSample(raw.y);
             }
+        };
+        window.addEventListener('devicemotion', this.motionListener);
+    }
 
-            attachThresholdControl() {
-                if (!this.nodes.thresholdSlider || !this.nodes.thresholdLabel) return;
+    handleRawSample(rawY) {
+        this.gravityEstimate = (this.gravityAlpha * this.gravityEstimate) + ((1 - this.gravityAlpha) * rawY);
+        const linearY = rawY - this.gravityEstimate;
+        this.handleIsolatedSample(linearY);
+    }
 
-                const updateLabel = (value) => {
-                    const formatted = `${parseFloat(value).toFixed(2)} m/s²`;
-                    this.nodes.thresholdLabel.textContent = formatted;
-                    this.pipeline.threshold = parseFloat(value);
-                };
+    handleIsolatedSample(forwardAccel) {
+        // Apply Kalman Filter here
+        const smoothed = this.kalman.update(forwardAccel);
+        const previousSmoothed = this.lastSmoothed;
+        this.lastSmoothed = smoothed;
 
-                updateLabel(this.nodes.thresholdSlider.value);
-                this.nodes.thresholdSlider.addEventListener('input', (event) => {
-                    updateLabel(event.target.value);
-                });
-            }
+        this.dispatchEvent(new CustomEvent('telemetry', {
+            detail: { rawAcceleration: forwardAccel, smoothedAcceleration: smoothed }
+        }));
 
-            handleResize() {
-                const { canvas } = this.nodes;
-                const dpr = window.devicePixelRatio || 1;
-                canvas.width = canvas.clientWidth * dpr;
-                canvas.height = canvas.clientHeight * dpr;
-                this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            }
+        this.detectCatch(previousSmoothed, smoothed);
+    }
 
-            async bootSequence() {
-                if (this.state.isRunning) return;
-
-                this.nodes.overlay.style.opacity = '0';
-                this.nodes.overlay.style.transition = 'opacity 0.3s ease';
-                setTimeout(() => this.nodes.overlay.style.display = 'none', 300);
-
-                try {
-                    if ('wakeLock' in navigator) await navigator.wakeLock.request('screen');
-                } catch (e) {
-                    console.warn('Wake lock failed', e);
-                }
-
-                await this.initMotion();
-                this.initGPS();
-
-                this.state.isRunning = true;
-                this.renderLoop();
-            }
-
-            async handleStatusTap(type) {
-                if (!this.state.isRunning) {
-                    await this.bootSequence();
-                    return;
-                }
-
-                if (type === 'motion') {
-                    await this.initMotion(true);
-                } else if (type === 'gps') {
-                    this.initGPS(true);
+    detectCatch(previousSmoothed, currentSmoothed) {
+        const now = performance.now();
+        if (now < this.lockedUntil) return;
+        
+        if (previousSmoothed !== null && previousSmoothed > this.threshold && currentSmoothed <= this.threshold) {
+            if (this.lastCatchTime > 0) {
+                const deltaSec = (now - this.lastCatchTime) / 1000;
+                const strokeRateSPM = Math.round(60 / deltaSec);
+                if (strokeRateSPM >= 12 && strokeRateSPM <= 50) {
+                    this.emitStroke(strokeRateSPM);
                 }
             }
-
-            updateStatus(dotNode, textNode, state, text) {
-                textNode.textContent = text;
-                dotNode.className = `w-2.5 h-2.5 rounded-full ${
-                    state === 'ok' ? 'bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.2)]' :
-                    state === 'err' ? 'bg-red-500 shadow-[0_0_0_2px_rgba(239,68,68,0.2)]' :
-                    'bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]'
-                }`;
-            }
-
-            async initMotion(force = false) {
-                await this.pipeline.start(force);
-            }
-
-            initGPS(force = false) {
-                if (!navigator.geolocation) {
-                    this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'NO GPS');
-                    this.nodes.split.textContent = '0:00';
-                    return;
-                }
-
-                if (!window.isSecureContext && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
-                    this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'HTTPS');
-                    this.nodes.split.textContent = '0:00';
-                    return;
-                }
-
-                this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'idle', 'SEARCHING');
-
-                if (this.gpsWatchId !== null) {
-                    navigator.geolocation.clearWatch(this.gpsWatchId);
-                    this.gpsWatchId = null;
-                }
-
-                const positionOptions = {
-                    enableHighAccuracy: true,
-                    timeout: 15000,
-                    maximumAge: 1000
-                };
-
-                const handlePosition = (pos) => {
-                    const hasCoordinates = Number.isFinite(pos.coords.latitude) && Number.isFinite(pos.coords.longitude);
-                    const speedMs = pos.coords.speed;
-
-                    if (hasCoordinates) {
-                        this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'ok', 'LOCKED');
-                    }
-
-                    if (speedMs !== null && Number.isFinite(speedMs) && speedMs > 0.5) {
-                        const secPer500 = 500 / speedMs;
-                        const m = Math.floor(secPer500 / 60);
-                        const s = Math.floor(secPer500 % 60).toString().padStart(2, '0');
-                        this.nodes.split.textContent = `${m}:${s}`;
-                    } else {
-                        this.nodes.split.textContent = '0:00';
-                    }
-                };
-
-                const handleError = (err) => {
-                    let statusText = 'SEARCHING';
-                    switch (err.code) {
-                        case 1:
-                            statusText = 'PERMISSION';
-                            break;
-                        case 2:
-                            statusText = 'NO FIX';
-                            break;
-                        case 3:
-                            statusText = 'TIMEOUT';
-                            break;
-                        default:
-                            statusText = 'DROPPED';
-                    }
-                    this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', statusText);
-                    this.nodes.split.textContent = '0:00';
-                };
-
-                navigator.geolocation.getCurrentPosition(handlePosition, handleError, positionOptions);
-                this.gpsWatchId = navigator.geolocation.watchPosition(handlePosition, handleError, positionOptions);
-            }
-
-            renderLoop() {
-                const { canvas } = this.nodes;
-                const w = canvas.clientWidth;
-                const h = canvas.clientHeight;
-                this.ctx.clearRect(0, 0, w, h);
-
-                this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
-                this.ctx.lineWidth = 2;
-                this.ctx.beginPath();
-                this.ctx.moveTo(0, h / 2);
-                this.ctx.lineTo(w, h / 2);
-                this.ctx.stroke();
-
-                const values = this.state.history;
-                const amplitude = Math.max(0.8, ...values.map(v => Math.abs(v)));
-                const scale = (h * 0.28) / amplitude;
-
-                this.ctx.strokeStyle = '#10b981';
-                this.ctx.lineWidth = 4;
-                this.ctx.lineCap = 'round';
-                this.ctx.lineJoin = 'round';
-                this.ctx.beginPath();
-
-                values.forEach((val, i) => {
-                    const x = (i / (values.length - 1)) * w;
-                    const y = (h / 2) - (val * scale);
-                    i === 0 ? this.ctx.moveTo(x, y) : this.ctx.lineTo(x, y);
-                });
-
-                this.ctx.stroke();
-                requestAnimationFrame(() => this.renderLoop());
-            }
+            this.lastCatchTime = now;
+            this.lockedUntil = now + this.lockoutMs;
         }
+    }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            window.app = new SensorEngine();
+    emitStroke(strokeRateSPM) {
+        if (this.onStrokeDetected) this.onStrokeDetected(strokeRateSPM);
+        this.dispatchEvent(new CustomEvent('strokeDetected', { detail: { strokeRateSPM } }));
+    }
+
+    publishStatus(state, text) {
+        this.dispatchEvent(new CustomEvent('status', { detail: { state, text } }));
+    }
+}
+
+class SensorEngine {
+    constructor() {
+        this.nodes = {
+            spm: document.getElementById('ui-spm'),
+            split: document.getElementById('ui-split'),
+            btn: document.getElementById('btn-start'),
+            overlay: document.getElementById('start-overlay'),
+            canvas: document.getElementById('canvas'),
+            dbgAccel: document.getElementById('debugAccel'),
+            dbgGPS: document.getElementById('debugGPS'),
+            dotAccel: document.getElementById('status-accel-dot'),
+            dotGPS: document.getElementById('status-gps-dot'),
+            telemetryStatus: document.getElementById('telemetry-status'),
+            gpsStatus: document.getElementById('gps-status')
+        };
+
+        this.ctx = this.nodes.canvas.getContext('2d');
+        this.state = { history: Array(225).fill(0), isRunning: false };
+        this.gpsWatchId = null;
+        this.nodes.thresholdLabel = document.getElementById('catch-threshold-label');
+        this.nodes.thresholdSlider = document.getElementById('catch-threshold-slider');
+
+        this.pipeline = new RowingDataPipeline({
+            // Tuning parameters for the Kalman filter
+            kalmanQ: 0.005, 
+            kalmanR: 0.1,
+            onStrokeDetected: (strokeRateSPM) => {
+                this.nodes.spm.textContent = strokeRateSPM;
+            }
         });
+
+        this.pipeline.addEventListener('status', event => {
+            const { state, text } = event.detail;
+            this.updateStatus(this.nodes.dotAccel, this.nodes.dbgAccel, state, text);
+        });
+
+        this.pipeline.addEventListener('telemetry', event => {
+            const { smoothedAcceleration } = event.detail;
+            const driveValue = Number.isFinite(smoothedAcceleration)
+                ? Math.max(0.08, Math.abs(smoothedAcceleration) + 0.04)
+                : 0.08;
+
+            this.state.history.push(driveValue);
+            this.state.history.shift();
+        });
+
+        this.bindEvents();
+        this.handleResize();
+        this.attachThresholdControl();
+    }
+
+    bindEvents() {
+        window.addEventListener('resize', () => this.handleResize());
+        this.nodes.btn.addEventListener('click', () => this.bootSequence());
+        this.nodes.telemetryStatus.addEventListener('click', () => this.handleStatusTap('motion'));
+        this.nodes.gpsStatus.addEventListener('click', () => this.handleStatusTap('gps'));
+    }
+
+    attachThresholdControl() {
+        if (!this.nodes.thresholdSlider || !this.nodes.thresholdLabel) return;
+        const updateLabel = (value) => {
+            const formatted = `${parseFloat(value).toFixed(2)} m/s²`;
+            this.nodes.thresholdLabel.textContent = formatted;
+            this.pipeline.threshold = parseFloat(value);
+        };
+        updateLabel(this.nodes.thresholdSlider.value);
+        this.nodes.thresholdSlider.addEventListener('input', (event) => {
+            updateLabel(event.target.value);
+        });
+    }
+
+    handleResize() {
+        const { canvas } = this.nodes;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = canvas.clientWidth * dpr;
+        canvas.height = canvas.clientHeight * dpr;
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    async bootSequence() {
+        if (this.state.isRunning) return;
+        this.nodes.overlay.style.opacity = '0';
+        this.nodes.overlay.style.transition = 'opacity 0.3s ease';
+        setTimeout(() => this.nodes.overlay.style.display = 'none', 300);
+
+        try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } 
+        catch (e) { console.warn('Wake lock failed', e); }
+
+        await this.initMotion();
+        this.initGPS();
+        this.state.isRunning = true;
+        this.renderLoop();
+    }
+
+    async handleStatusTap(type) {
+        if (!this.state.isRunning) {
+            await this.bootSequence();
+            return;
+        }
+        if (type === 'motion') await this.initMotion(true);
+        else if (type === 'gps') this.initGPS(true);
+    }
+
+    updateStatus(dotNode, textNode, state, text) {
+        textNode.textContent = text;
+        dotNode.className = `w-2.5 h-2.5 rounded-full ${
+            state === 'ok' ? 'bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.2)]' :
+            state === 'err' ? 'bg-red-500 shadow-[0_0_0_2px_rgba(239,68,68,0.2)]' :
+            'bg-amber-400 animate-pulse shadow-[0_0_0_2px_rgba(251,191,36,0.2)]'
+        }`;
+    }
+
+    async initMotion(force = false) {
+        await this.pipeline.start(force);
+    }
+
+    initGPS(force = false) {
+        if (!navigator.geolocation) {
+            this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'NO GPS');
+            this.nodes.split.textContent = '0:00';
+            return;
+        }
+        if (!window.isSecureContext && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+            this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', 'HTTPS');
+            this.nodes.split.textContent = '0:00';
+            return;
+        }
+
+        this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'idle', 'SEARCHING');
+        if (this.gpsWatchId !== null) {
+            navigator.geolocation.clearWatch(this.gpsWatchId);
+            this.gpsWatchId = null;
+        }
+
+        const positionOptions = { enableHighAccuracy: true, timeout: 15000, maximumAge: 1000 };
+
+        const handlePosition = (pos) => {
+            const hasCoordinates = Number.isFinite(pos.coords.latitude) && Number.isFinite(pos.coords.longitude);
+            const speedMs = pos.coords.speed;
+            if (hasCoordinates) this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'ok', 'LOCKED');
+
+            if (speedMs !== null && Number.isFinite(speedMs) && speedMs > 0.5) {
+                const secPer500 = 500 / speedMs;
+                const m = Math.floor(secPer500 / 60);
+                const s = Math.floor(secPer500 % 60).toString().padStart(2, '0');
+                this.nodes.split.textContent = `${m}:${s}`;
+            } else {
+                this.nodes.split.textContent = '0:00';
+            }
+        };
+
+        const handleError = (err) => {
+            let statusText = 'SEARCHING';
+            switch (err.code) {
+                case 1: statusText = 'PERMISSION'; break;
+                case 2: statusText = 'NO FIX'; break;
+                case 3: statusText = 'TIMEOUT'; break;
+                default: statusText = 'DROPPED';
+            }
+            this.updateStatus(this.nodes.dotGPS, this.nodes.dbgGPS, 'err', statusText);
+            this.nodes.split.textContent = '0:00';
+        };
+
+        navigator.geolocation.getCurrentPosition(handlePosition, handleError, positionOptions);
+        this.gpsWatchId = navigator.geolocation.watchPosition(handlePosition, handleError, positionOptions);
+    }
+
+    renderLoop() {
+        const { canvas } = this.nodes;
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        this.ctx.clearRect(0, 0, w, h);
+
+        this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(0, h / 2);
+        this.ctx.lineTo(w, h / 2);
+        this.ctx.stroke();
+
+        const values = this.state.history;
+        const amplitude = Math.max(0.8, ...values.map(v => Math.abs(v)));
+        const scale = (h * 0.28) / amplitude;
+
+        this.ctx.strokeStyle = '#10b981';
+        this.ctx.lineWidth = 4;
+        this.ctx.lineCap = 'round';
+        this.ctx.lineJoin = 'round';
+        this.ctx.beginPath();
+
+        values.forEach((val, i) => {
+            const x = (i / (values.length - 1)) * w;
+            const y = (h / 2) - (val * scale);
+            i === 0 ? this.ctx.moveTo(x, y) : this.ctx.lineTo(x, y);
+        });
+
+        this.ctx.stroke();
+        requestAnimationFrame(() => this.renderLoop());
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new SensorEngine();
+});
     </script>
 </body>
 </html>
